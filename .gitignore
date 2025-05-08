@@ -189,3 +189,4 @@ cython_debug/
 stt.py
 vosk-model-tl-ph-generic-0.6/
 tmp/
+feature_analysis/
