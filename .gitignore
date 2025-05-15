@@ -7,12 +7,14 @@ __pycache__/
 *.so
     
 # directories
+feature_analysis/strf_plots/
 feature_extraction/data/
 feature_extraction/data_audio/
 preprocess/preprocessed_audio/
 preprocess/processed_audio_3/
 preprocess/processed_audio/
 preprocess/preprocessed_audio_erik/
+feature_analysis/strf_plots/
 
 # file extensions
 *.wav

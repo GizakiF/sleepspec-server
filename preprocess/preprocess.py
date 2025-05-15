@@ -86,33 +86,27 @@ def preprocess_audio(
         shutil.rmtree(segmented_dir)
     segmented_dir.mkdir(parents=True, exist_ok=True)
 
-    # Remove silence from the audio
-    audio_no_silence = remove_silence(input_file)
-    temp_file = Path(output_dir) / Path("temp_no_silence.wav")
-    audio_no_silence.export(temp_file, format="wav")
-
+    # Load and resample audio
     y, sr = load_audio_with_soundfile(input_file)
-
-    # y, sr = librosa.load(input_file, sr=None)
 
     # Apply noise reduction using spectral gating
     # y_denoised = nr.reduce_noise(y=y, sr=sr)
 
-    # Noise reduction in chunks (if audio is long)
-    chunk_size = sr * 5  # Process 5-second chunks
-    y_denoised = np.concatenate(
-        [
-            nr.reduce_noise(y[i : i + chunk_size], sr=sr)
-            for i in range(0, len(y), chunk_size)
-        ]
-    )
+    ## Noise reduction in chunks (if audio is long)
+    # chunk_size = sr * 5  # Process 5-second chunks
+    # y_denoised = np.concatenate(
+    #     [
+    #         nr.reduce_noise(y[i : i + chunk_size], sr=sr)
+    #         for i in range(0, len(y), chunk_size)
+    #     ]
+    # )
 
-    # Normalize amplitudes to [-1, 1]
-    y_normalized = y_denoised / np.max(np.abs(y_denoised))
+    ## Normalize amplitudes to [-1, 1]
+    # y_normalized = y_denoised / np.max(np.abs(y_denoised))
 
     # Resample from 44.1kHz to 16kHz if not in target sampling rate
     if sr != target_sr:
-        y_normalized = librosa.resample(y_denoised, orig_sr=sr, target_sr=target_sr)
+        y = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
         sr = target_sr
 
     # total_samples = len(y_denoised)
@@ -125,20 +119,23 @@ def preprocess_audio(
 
     # Split and save segments
     segments = []
-    for i, start in enumerate(range(0, len(y_normalized), segment_samples)):
+
+    for i, start in enumerate(reversed(range(0, len(y), segment_samples))):
         end = start + segment_samples
-        segment = y_normalized[start:end]
+        segment = y[start:end]
         if len(segment) == segment_samples:  # includes full-length segments only
             segments.append(segment)
             # Save segment to disk if output_dir is provided
             if output_dir:
+                file = segmented_dir / f"segment_{i + 1}.wav"
                 sf.write(
-                    segmented_dir / f"{audio_filename}_segment_{i + 1}.wav",
+                    file,
                     segment,
                     sr,
                 )
 
     return segments, sr
+
 
     # # Split and save segments
     # for i, start in enumerate(range(1, total_samples, segment_samples)):

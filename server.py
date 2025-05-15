@@ -1,9 +1,11 @@
+import io
+import zipfile
 from feature_extraction.strf_analyzer import STRFAnalyzer
 from feature_extraction.run_extraction import feature_extract_segments
 from preprocess.preprocess import preprocess_audio
 import sys
 from werkzeug.utils import secure_filename
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory, send_file
 from flask_cors import CORS
 from pydub import AudioSegment
 from pathlib import Path
@@ -20,7 +22,7 @@ sys.path.append("feature_extraction/")
 
 app = Flask(__name__)
 CORS(app)
-uploads_path = "tmp/uploads"
+uploads_path = Path("tmp/uploads")
 
 strf_analyzer = STRFAnalyzer()
 
@@ -38,6 +40,8 @@ class SD_Class(Enum):
 @dataclass
 class Classification:
     sd: SD_Class
+    classes: list[SD_Class]
+    scores: list[float]
     confidence_score: float
     result: str
     is_success: bool
@@ -47,10 +51,39 @@ class Classification:
         return jsonify(
             {
                 "class": self.sd.value,
+                "classes": [c.value for c in self.classes],
+                "scores": self.scores,
                 "confidence_score": self.confidence_score,
                 "result": self.result,
             }
         )
+
+
+@app.route('/plots/<path:filename>')
+def get_plot(filename):
+    print(f"Requesting plot: {filename}")
+    path = Path('feature_analysis/strf_plots/').resolve(strict=True)
+    return send_from_directory(path, filename)
+
+@app.route('/segments')
+def Segments():
+    segments_dir = Path('preprocess/preprocessed_audio/processed_audio/segmented_audio')
+
+    # Construct an in-memory zip file
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+        for _, file in enumerate(segments_dir.glob('segment_*.wav')):
+            zip_file.write(file, arcname=file.name)
+
+    # reset buffer pointer back to 0
+    zip_buffer.seek(0)
+
+    return send_file(
+        zip_buffer,
+        mimetype='application/zip',
+        download_name='segments.zip',
+        as_attachment=True,
+    )
 
 
 @app.route("/upload", methods=["POST"])
@@ -60,11 +93,9 @@ def Upload():
 
     audio_file = request.files["audio"]
     if audio_file.filename:
-        Path(uploads_path).mkdir(parents=True, exist_ok=True)
+        uploads_path.mkdir(parents=True, exist_ok=True)
 
-        uploads = Path(uploads_path)
-
-        file_path = uploads / secure_filename(audio_file.filename)
+        file_path = uploads_path / secure_filename(audio_file.filename)
         audio_file.save(file_path)
 
         wav_file = convertWAV(file_path)
@@ -91,6 +122,8 @@ def predict_features(features, svm, pca):
     pre_counter = 0
     post_counter = 0
     avg_confidence_score = 0.0
+    classes = []
+    confidence_scores = []
 
     for i, feature in enumerate(features):
         print(f"Processing feature {i + 1}")
@@ -139,22 +172,42 @@ def predict_features(features, svm, pca):
         #         "SVM model does not support decision_function or predict_proba."
         #     )
 
+        # This is where the computation of Confidence Score occurs
         # logits = np.array([1.0, 0.1])
         # probs = softmax(logits)
         # confidence = np.max(probs)
-        probs = svm.predict_proba(feature_pca)
-        confidence = np.max(probs, axis=1)
+
+        # probs = svm.predict_proba(feature_pca)
+        # confidence = np.max(probs) # probability of the predicted class
+
+        decision_scores = svm.decision_function(feature_pca)
+        confidence = np.abs(decision_scores)
 
         assert len(confidence) == 1
         confidence = confidence[0]
 
-        print(f"confidence scorex: {confidence}")
+        # decision_scores = svm.decision_function(feature_pca)[0]
+        # min_dist, max_dist = np.min(decision_scores), np.max(decision_scores)
+        #
+        # if max_dist == min_dist:
+        #     confidence = 0.5  # neutral confidence if all scores are identical
+        # else:
+        #     confidence = (decision_scores - min_dist) / (max_dist - min_dist)
+
+        # confidence = confidence
+
+        confidence_scores.append(confidence)
+
+        print(f"confidence score: {confidence}")
 
         # Update counters based on prediction
+        print(f"SVM classes: {svm.classes_}")
         if y_pred == svm.classes_[0]:
             post_counter += 1
+            classes.append(SD_Class.SD)
         elif y_pred == svm.classes_[1]:
             pre_counter += 1
+            classes.append(SD_Class.NSD)
 
         print(f"Predicted class for feature {i + 1}: {y_pred}")
         print(f"Confidence score: {confidence}")
@@ -177,12 +230,12 @@ def predict_features(features, svm, pca):
         # avg_confidence_score = np.max(probs)
 
     print(f"Pre (non-sleep-deprived) features counts: {pre_counter}")
-    print(f"Post (non-sleep-deprived) features counts: {post_counter}")
+    print(f"Post (sleep-deprived) features counts: {post_counter}")
     print(f"average CFS: {avg_confidence_score}")
 
     is_success = True
 
-    return pre_counter, post_counter, avg_confidence_score, is_success
+    return pre_counter, post_counter, classes, confidence_scores, avg_confidence_score, is_success
 
 
 def classify(audio_path: Path) -> Classification:
@@ -241,8 +294,8 @@ def classify(audio_path: Path) -> Classification:
     print("Feature Extraction Complete.")
 
     # test_sample = pickle.load(test_sample_path)
-    with open(test_sample_path, "rb") as f:
-        test_sample = pickle.load(f)
+    # with open(test_sample_path, "rb") as f:
+    #     test_sample = pickle.load(f)
 
     # print(type(test_sample), test_sample)
     # np.set_printoptions(threshold=np.inf)
@@ -253,7 +306,7 @@ def classify(audio_path: Path) -> Classification:
     # test_sample = np.mean(magnitude_strf, axis=0)
     # print(test_sample["strf"])
 
-    pre_count, post_count, avg_confidence_score, is_success = predict_features(
+    pre_count, post_count, classes, confidence_scores, avg_confidence_score, is_success = predict_features(
         features, svm, pca
     )
 
@@ -262,6 +315,8 @@ def classify(audio_path: Path) -> Classification:
     if post_count > pre_count:
         return Classification(
             sd=SD_Class.SD,
+            scores=confidence_scores,
+            classes=classes,
             confidence_score=avg_confidence_score,
             result="You are sleep deprived.",
             is_success=is_success,
@@ -269,6 +324,8 @@ def classify(audio_path: Path) -> Classification:
     else:
         return Classification(
             sd=SD_Class.NSD,
+            scores=confidence_scores,
+            classes=classes,
             confidence_score=avg_confidence_score,
             result="You are not sleep deprived.",
             is_success=is_success,
